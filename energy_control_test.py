@@ -24,7 +24,7 @@ except:
     print("LCD ikke tilgængelig - fortsætter uden")
 
 # Neopixel LEDs
-n = 5
+n = 2
 np = NeoPixel(Pin(26), n)
 
 # Relæ (kan bruge pin 14 eller 15)
@@ -115,41 +115,33 @@ def hent_spotpris():
 ###########################################################
 # KONTROL LOGIK
 
-# Tærskelværdier (juster efter behov)
-CO2_THRESHOLD = 80   # gram CO2 pr kWh
-PRIS_THRESHOLD = 40  # øre pr kWh
+# TÆRSKELVÆRDI
+THRESHOLD = 50  # CO2 gram/kWh eller pris øre/kWh
 
 def opdater_system(co2, pris):
-    """Opdater LED, relæ og LCD baseret på data"""
+    """Opdater LED og relæ baseret på værdi"""
     
-    # Tjek betingelser
-    green_energy = co2 < CO2_THRESHOLD
-    low_price = pris < PRIS_THRESHOLD
+    # VÆLG HER: Brug co2 eller pris
+    value = co2  # Skift til 'pris' hvis du vil bruge spotpris
     
-    # LED 4 (index 4): Grøn hvis grøn energi, rød hvis ikke
-    if green_energy:
-        set_led(4, 0, 255, 0)  # Grøn
-    else:
-        set_led(4, 255, 0, 0)  # Rød
-    
-    # Relæ: Tænd kun hvis BÅDE grøn energi OG lav pris
-    # (eller kun grøn energi hvis du vil ignorere pris)
-    if green_energy and low_price:
+    # LED 0: Grøn hvis under 50, rød hvis over
+    if value < THRESHOLD:
+        set_led(0, 0, 255, 0)  # Grøn - Oplader
         relay.value(1)
-        relay_status = "ON - Lader"
+        status = "ON - Lader"
     else:
+        set_led(0, 255, 0, 0)  # Rød - Oplader ikke
         relay.value(0)
-        relay_status = "OFF"
+        status = "OFF"
     
-    # Opdater LCD hvis tilgængelig
+    # LCD opdatering
     if LCD_AVAILABLE:
         lcd.clear()
         lcd.putstr(f"CO2: {co2:.1f} g/kWh\n")
         lcd.putstr(f"Pris: {pris:.1f} ore\n")
-        lcd.putstr(f"Status: {relay_status}")
+        lcd.putstr(f"Status: {status}")
     
-    # Print til console
-    print(f"CO2: {co2:.1f} g/kWh | Pris: {pris:.1f} øre | {relay_status}")
+    print(f"CO2: {co2:.1f} | Pris: {pris:.1f} | {status}")
 
 ###########################################################
 # MAIN PROGRAM
