@@ -4,7 +4,6 @@ import urequests
 import network
 from neopixel import NeoPixel
 from gpio_lcd import GpioLcd
-import secrets
 
 GRÆNSE = 50
 LYSSTYRKE = 10
@@ -24,7 +23,7 @@ except:
 # WIFI
 wlan = network.WLAN(network.STA_IF)
 wlan.active(True)
-wlan.connect(secrets.SSID, secrets.PASSWORD)
+wlan.connect("IT-TEKNOLOG-2", "KeaTeknolog6!")
 
 print("Forbinder WiFi...")
 while not wlan.isconnected():
@@ -40,7 +39,10 @@ while True:
         co2 = response.json()['records'][0]['CO2Emission']
         response.close()
         print(f"CO2: {co2}")
-        
+    except:
+        pass
+    
+    try:
         print("Henter pris...")
         response = urequests.get('https://api.energidataservice.dk/dataset/Elspotprices?limit=1')
         pris = response.json()['records'][0]['SpotPriceDKK']
@@ -71,4 +73,4 @@ while True:
         import sys
         sys.print_exception(e)
     
-    time.sleep(5)
+    time.sleep(20)
