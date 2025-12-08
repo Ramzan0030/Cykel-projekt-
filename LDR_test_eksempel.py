@@ -1,9 +1,18 @@
-#LDR test eksempel
 from machine import Pin, ADC
+from neopixel import NeoPixel
 from time import sleep
 
-ldr = ADC(Pin(4, Pin.IN))
+LDR = ADC(Pin(32, Pin.IN))
+LDR.atten(ADC.ATTN_11DB)
+np = NeoPixel(Pin(26), 12)
 
 while True:
-    print(f"LDR value: {ldr.read()}")
-    sleep(1)
+    ldr_value = LDR.read()
+    
+    if ldr_value > 1600:  # Mørkt
+        np.fill((255, 0, 0))  # Rød
+    else:  # Lyst
+        np.fill((0, 0, 0))  # Slukket
+    
+    np.write()
+    sleep(0.5)
