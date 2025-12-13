@@ -1,3 +1,4 @@
+from adc_sub import ADC_substitute
 import time
 import network
 from machine import UART, I2C, Pin, ADC
@@ -31,7 +32,7 @@ GPS_RX = 16
 MPU_SCL = 18
 MPU_SDA = 19
 DHT11_PIN = 26
-BATTERY_PIN = 36
+BATTERY_PIN = 34
 INA219_I2C_ADDR = 0x40
 
 # Alarm hardware
@@ -39,7 +40,7 @@ ALARM_LED_PIN = 14      # Rød LED til alarm blink (backup)
 ALARM_BUZZER_PIN = 15   # Passiv buzzer til alarm lyd
 NEOPIXEL_PIN = 13       # NeoPixel ring (WS2812)
 NEOPIXEL_COUNT = 12     # Antal LEDs i ring (juster efter din ring)
-NEOPIXEL_FIRST_LED = 1  # Start LED index (0=normal, 1=skip første LED - ANBEFALET hvis kun 1 LED lyser!)
+NEOPIXEL_FIRST_LED = 0  # Start LED index (0=normal, 1=skip første LED - ANBEFALET hvis kun 1 LED lyser!)
 
 # Battery configuration
 BATTERY_CAPACITY = 2000  # mAh
@@ -148,9 +149,8 @@ alarm_sound = music(songString=alarm_melody, looping=True, tempo=2, duty=50000, 
 alarm_sound.stop()  # Start slukket
 print("   ✓ Alarm buzzer initialized (high volume)")
 
-# Battery ADC
-battery_adc = ADC(Pin(BATTERY_PIN))
-battery_adc.atten(ADC.ATTN_11DB)
+battery_adc = ADC_substitute(BATTERY_PIN)
+print("   ✓ Battery ADC initialized (calibrated)")
 
 print("   ✓ All sensors initialized")
 
@@ -255,15 +255,6 @@ LCD_ROTATION_INTERVAL = 3000  # Skift skærm hvert 3 sekund
 # ============================================================================
 # BATTERY & CURRENT FUNCTIONS
 # ============================================================================
-def battery_percent(adc_val):
-    """Calculate battery percentage from ADC reading"""
-    y = ADC_A * adc_val + ADC_B
-    return max(0, min(100, int(y)))
-
-def read_battery():
-    """Read battery percentage"""
-    raw = battery_adc.read()
-    return battery_percent(raw)
 
 def read_current():
     """Read current from INA219 with error handling"""
@@ -274,18 +265,35 @@ def read_current():
     
     try:
         current = ina219.get_current()
-        # Fix negative current (INA219 tilsluttet baglæns)
         current = abs(current)
     except OSError as e:
-        # Use last known value if read fails
         current = current_readings[-1] if current_readings else 0.0
     
-    # Rolling average
     current_readings.append(current)
     if len(current_readings) > MAX_CURRENT_READINGS:
         current_readings.pop(0)
     
     return sum(current_readings) / len(current_readings)
+
+def read_battery():
+    """Read battery voltage with ACTUAL corrections from multimeter calibration"""
+    voltage = battery_adc.read_voltage()  # ADC læser ~1.72V
+
+    battery_voltage = voltage * 1.691
+    
+    # 3.0V = 0%, 4.2V = 100%
+    battery_pct = ((battery_voltage - 3.3) / (4.2 - 3.3)) * 100
+    battery_pct = max(0, min(100, int(battery_pct)))
+    
+    return battery_pct
+
+def calculate_runtime(battery_pct, current_ma):
+    """Calculate remaining runtime in hours"""
+    if current_ma <= 1:
+        return None
+    
+    remaining_capacity = BATTERY_CAPACITY * (battery_pct / 100)
+    return remaining_capacity / current_ma
 
 def calculate_runtime(battery_pct, current_ma):
     """Calculate remaining runtime in hours"""
@@ -520,7 +528,7 @@ def check_mqtt_connection():
             print(f"   ❌ Reconnect failed: {e2}")
             return False
 # ============================================================================
-# MPU MOTION DETECTION
+# MPU MOTION DETECTION - FORBEDRET MED RETRY LOGIC
 # ============================================================================
 def detect_motion():
     global mpu_baseline
@@ -531,30 +539,44 @@ def detect_motion():
     if not MPU_AVAILABLE:
         return False
     
-    try:
-        data = i2c.readfrom_mem(MPU_ADDR, 0x3B, 6)
-        x = (data[0] << 8) | data[1]
-        y = (data[2] << 8) | data[3]
-        z = (data[4] << 8) | data[5]
-        
-        if x > 32767: x -= 65536
-        if y > 32767: y -= 65536
-        if z > 32767: z -= 65536
-        
-        current = math.sqrt(x*x + y*y + z*z)
-        diff = abs(current - mpu_baseline)
-        
-        # DEBUG: Print diff værdi når der er bevægelse
-        if diff > 500:  # Print når diff > 500 (lavere threshold for debug)
-            print(f"🔍 MPU: diff={diff:.0f}, baseline={mpu_baseline:.0f}, current={current:.0f}")
-        
-        if diff > 5000:
-            print(f"✅ MOTION DETECTED! diff={diff:.0f}")
-            return True
-        return False
-    except Exception as e:
-        print(f"❌ MPU read error: {e}")
-        return False
+    max_retries = 3
+    retry_delay = 0.01  # 10ms mellem retries
+    
+    for attempt in range(max_retries):
+        try:
+            data = i2c.readfrom_mem(MPU_ADDR, 0x3B, 6)
+            x = (data[0] << 8) | data[1]
+            y = (data[2] << 8) | data[3]
+            z = (data[4] << 8) | data[5]
+            
+            if x > 32767: x -= 65536
+            if y > 32767: y -= 65536
+            if z > 32767: z -= 65536
+            
+            current = math.sqrt(x*x + y*y + z*z)
+            diff = abs(current - mpu_baseline)
+            
+            # Kun print når der faktisk er betydelig motion (reducer spam)
+            if diff > 5000:
+                print(f"✅ MOTION! diff={diff:.0f}, attempt={attempt+1}")
+                return True
+            
+            return False  # Succesful read, ingen motion
+            
+        except OSError as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                # Kun print error ved sidste forsøg
+                print(f"⚠️ MPU timeout after {max_retries} attempts")
+                return False
+        except Exception as e:
+            print(f"❌ MPU unexpected error: {e}")
+            return False
+    
+    return False
+
 
 # ============================================================================
 # GPS
@@ -858,7 +880,7 @@ CONNECTION_CHECK_INTERVAL = 30000  # ← TILFØJ DENNE LINJE
 while True:
     now = time.ticks_ms()
     
-    # Check MQTT beskeder hyppigt for at undgå buffer overflow
+    # Check MQTT beskeder hyppigt
     if time.ticks_diff(now, last_mqtt_check) > MQTT_CHECK_INTERVAL:
         try:
             client.check_msg()
@@ -873,9 +895,8 @@ while True:
         
     # LCD rotation (hvert 3 sekund)
     if time.ticks_diff(now, last_lcd_rotation) > LCD_ROTATION_INTERVAL:
-        lcd_screen = (lcd_screen + 1) % 3  # Rotér 0 → 1 → 2 → 0
+        lcd_screen = (lcd_screen + 1) % 3
         last_lcd_rotation = now
-        # Trigger update med seneste data
         temp, humidity = read_temperature_humidity()
         battery = read_battery()
         current_ma = read_current()
@@ -887,20 +908,18 @@ while True:
         course = latest_course if latest_course is not None else 0.0
         update_lcd(speed, course, lat, lon, battery, temp, humidity, runtime_str)
     
-    # Update alarm LED blink og buzzer hvis alarm aktiv
+    # Update alarm LED blink
     update_alarm_blink()
     
-    if time.ticks_diff(now, last_gps_update) > GPS_UPDATE:  # ← Din GPS update logik fortsætter her
+    # GPS update
+    if time.ticks_diff(now, last_gps_update) > GPS_UPDATE:
         update_gps()
         last_gps_update = now
 
-    # ========================================================================
-    # ========================================================================
-    # AUTO-ARMERING LOGIK (Krav ID: 4)
-    # ========================================================================
-    # Kun aktiv hvis system enabled og MPU tilgængelig
+    # AUTO-ARMERING LOGIK
     if not TEST_MODE and system_enabled and MPU_AVAILABLE:
         motion = detect_motion()
+        time.sleep(0.005)
         
         if motion:
             print(f"🔍 motion=True, auto_armed={auto_armed}, alarm_active={alarm_active}")
@@ -932,13 +951,12 @@ while True:
                 else:
                     motion_start = 0
         else:
-            # Reset KUN efter grace period
             if motion_start != 0:
                 if time.ticks_diff(now, last_motion_detected) > MOTION_GRACE:
                     print(f"⏸️ Motion timeout - reset confirmation")
                     motion_start = 0
         
-        # Check om idle time → AUTO-ARM (INSIDE MPU block!)
+        # Check om idle time → AUTO-ARM
         idle_time_ms = time.ticks_diff(now, last_motion)
         
         if not auto_armed and not alarm_active and idle_time_ms > IDLE_TIME:
@@ -954,23 +972,12 @@ while True:
                     print("   NeoPixel: GREEN (standby)")
                 print("="*60)
                 last_auto_arm_print = now
-                
-                # Regular telemetry (hvert 10 sekund)
-    # Alarm telemetry (hvert 10 sekund under alarm)
-        if alarm_active and time.ticks_diff(now, last_telemetry) > ALARM_TELEMETRY:
-            send_telemetry(alarm=True)
-            last_telemetry = now
-            
-        if not alarm_active and time.ticks_diff(now, last_telemetry) > TELEMETRY_INTERVAL:
-            
-            # DEBUG
-            raw = battery_adc.read()
-            voltage = (raw / 4095) * 3.3 * 2
-            battery_pct = battery_percent(raw)
-            current_ma = read_current()
-            runtime = calculate_runtime(battery_pct, current_ma)
-            print(f"🔋 ADC: {raw} | V: {voltage:.2f}V | Bat: {battery_pct}% | I: {current_ma:.1f}mA | Runtime: {runtime:.1f}h")
-            
-            send_telemetry(alarm=False)
-            last_telemetry = now
+    
+    # TELEMETRY - Alarm og Regular
+    if alarm_active and time.ticks_diff(now, last_telemetry) > ALARM_TELEMETRY:
+        send_telemetry(alarm=True)
+        last_telemetry = now
         
+    if not alarm_active and time.ticks_diff(now, last_telemetry) > TELEMETRY_INTERVAL:
+        send_telemetry(alarm=False)
+        last_telemetry = now
