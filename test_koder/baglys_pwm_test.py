@@ -3,7 +3,7 @@ from machine import Pin, PWM
 import time
 
 # Configuration
-TAIL_LIGHT_PIN = 23  # Skift til din GPIO
+TAIL_LIGHT_PIN = 15  # Skift til din GPIO
 
 # Test 1: Simple ON/OFF
 print("\n=== Test 1: ON/OFF ===")
