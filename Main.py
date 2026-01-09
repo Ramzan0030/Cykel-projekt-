@@ -83,7 +83,6 @@ def init_mpu_with_retry():
             return True
         except Exception as err:
             time.sleep(0.3)
-    
     return False
 
 MPU_ADDR = 0x68
